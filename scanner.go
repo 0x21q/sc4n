@@ -1,30 +1,46 @@
 package main
 
 import (
-	"errors"
+	"flag"
 	"fmt"
-	"os"
+	"log"
+	"net"
 )
 
-type Input struct{}
+type RawInput struct {
+	host  string
+	ports string
+}
+
+type Input struct {
+	host  net.IP // not sure
+	ports []uint16
+}
 
 func main() {
-	input, err := parse()
-	// TODO: error handle
+	input, err := load_arguments()
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
 	scan(input)
 	// TODO: error handle
 }
 
-func parse() (Input, error) {
-	arguments := os.Args
+func load_arguments() (Input, error) {
+	host := flag.String("h", "", "Specify host to scan (e.g. -h <domain> or -h <ip>)")
+	ports := flag.String("p", "", "Specify port(s) to scan (e.g. -p <port> or -p <port1,port2,port3> or -p <port1-port2>)")
+	flag.Parse()
 
-	for _, arg := range arguments {
-		fmt.Println(arg)
+	raw_input := RawInput{
+		host:  *host,
+		ports: *ports,
 	}
 
-	// TODO: check number of arguments
+	fmt.Println(raw_input)
 
-	// TODO: check syntax of arguments
+	// check loaded arguments
 }
 
 func scan(input Input) {}
