@@ -2,15 +2,9 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"net"
 )
-
-type RawInput struct {
-	host  string
-	ports string
-}
 
 type Input struct {
 	host  net.IP // not sure
@@ -33,12 +27,12 @@ func load_arguments() (Input, error) {
 	ports := flag.String("p", "", "Specify port(s) to scan (e.g. -p <port> or -p <port1,port2,port3> or -p <port1-port2>)")
 	flag.Parse()
 
-	raw_input := RawInput{
-		host:  *host,
-		ports: *ports,
-	}
+	var input Input
 
-	fmt.Println(raw_input)
+	if parsed := net.ParseIP(*host); parsed != nil {
+		input.host = parsed
+	} else {
+	}
 
 	// check loaded arguments
 }
