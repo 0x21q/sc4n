@@ -3,50 +3,76 @@ package args
 import (
 	"errors"
 	"flag"
-	"fmt"
+	"goscan/types"
 	"net"
 	"strconv"
 	"strings"
 )
 
-type Input struct {
-	hosts []net.IP
-	ports []uint16
-}
-
-func Load() (Input, error) {
-	raw_host := flag.String("h", "", "Specify host to scan (e.g. -h <domain> or -h <ip>)")
-	raw_ports := flag.String("p", "", "Specify port(s) to scan (e.g. -p <port> or -p <port1,port2,port3> or -p <port1-port2>)")
+func Load() (types.ScanTarget, error) {
+	raw_host := flag.String(
+		"h",
+		"",
+		"Specify host to scan (e.g. -h <domain> or -h <ip>)",
+	)
+	raw_ports := flag.String(
+		"p",
+		"",
+		"Specify port(s) to scan (e.g. -p <p1> or -p <p1, p2, ...> or -p <p1-p2>)",
+	)
+	tcp := flag.Bool("t", false, "Specify to perform TCP scan (default)")
+	syn := flag.Bool("s", false, "Specify to perform TCP syn scan")
+	udp := flag.Bool("u", false, "Specify to perform UDP scan")
 	flag.Parse()
 
 	if *raw_host == "" || *raw_ports == "" {
-		return Input{}, errors.New("Unspecified parameters")
+		return types.ScanTarget{}, errors.New("Unspecified host or port")
 	}
 
 	hosts, err := net.LookupIP(*raw_host)
 	if err != nil {
-		return Input{}, err
+		return types.ScanTarget{}, err
 	}
 
-	ports, err := parse_ports(*raw_ports)
+	ports, err := parsePorts(*raw_ports)
 	if err != nil {
-		return Input{}, err
+		return types.ScanTarget{}, err
 	}
 
-	return Input{hosts, ports}, nil
+	if (*tcp && *syn) || (*tcp && *udp) || (*syn && *udp) {
+		return types.ScanTarget{},
+			errors.New("Mutiple scan modes are not yet supported")
+	}
+
+	var mode types.ScanMode
+	switch {
+	case *syn:
+		mode = types.SYN
+	case *udp:
+		mode = types.UDP
+	default:
+		mode = types.TCP
+	}
+
+	return types.ScanTarget{
+			Hosts: hosts,
+			Ports: ports,
+			Mode:  mode,
+		},
+		nil
 }
 
-func parse_ports(raw_ports string) ([]uint16, error) {
+func parsePorts(raw_ports string) ([]uint16, error) {
 	if strings.Contains(raw_ports, "-") {
-		return parse_dash(raw_ports)
+		return parseDash(raw_ports)
 	} else if strings.Contains(raw_ports, ",") {
-		return parse_comma(raw_ports)
+		return parseComma(raw_ports)
 	} else {
-		return parse_single(raw_ports)
+		return parseSingle(raw_ports)
 	}
 }
 
-func parse_dash(raw_ports string) ([]uint16, error) {
+func parseDash(raw_ports string) ([]uint16, error) {
 	splits := strings.Split(raw_ports, "-")
 	if len(splits) != 2 {
 		return nil, errors.New("Invalid port format")
@@ -74,7 +100,7 @@ func parse_dash(raw_ports string) ([]uint16, error) {
 	return ports, nil
 }
 
-func parse_comma(raw_ports string) ([]uint16, error) {
+func parseComma(raw_ports string) ([]uint16, error) {
 	var ports []uint16
 	splits := strings.Split(raw_ports, ",")
 
@@ -90,7 +116,7 @@ func parse_comma(raw_ports string) ([]uint16, error) {
 	return ports, nil
 }
 
-func parse_single(raw_ports string) ([]uint16, error) {
+func parseSingle(raw_ports string) ([]uint16, error) {
 	n, err := strconv.ParseUint(raw_ports, 10, 16)
 	if err != nil {
 		return nil, errors.New("Invalid port format")

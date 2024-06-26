@@ -3,17 +3,19 @@ package main
 import (
 	"fmt"
 	"goscan/args"
+	"goscan/scan"
 	"os"
 )
 
 func main() {
-	input, err := args.Load()
+	target, err := args.Load()
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	fmt.Println(input)
 
-	//Scan(input)
-	// TODO: error handle
+	if err := scan.ScanInit(target); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 }
