@@ -5,7 +5,6 @@ import (
 	"net"
 )
 
-func Udp(hosts []net.IP, ports []uint16) error {
+func Udp(hosts []net.IP, ports []uint16) {
 	fmt.Println("Doing udp scan")
-	return nil
 }
