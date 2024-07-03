@@ -9,17 +9,8 @@ import (
 )
 
 func Tcp(hosts []net.IP, ports []uint16) {
-	var selected net.IP
-	fmt.Println("[+] Available hosts: ")
-
-	for _, h := range hosts {
-		fmt.Println(h)
-		if h.To4() != nil {
-			selected = h
-		}
-	}
-	selected = hosts[0]
-	fmt.Printf("[+] Initiating scan on: %s\n", selected.String())
+	selected := SelectHost(hosts, true)
+	fmt.Printf("[+] Initiating TCP scan on: %s\n", selected.String())
 
 	for _, port := range ports {
 		targetStr := selected.String() + ":" + strconv.FormatUint(uint64(port), 10)
