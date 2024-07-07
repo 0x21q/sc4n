@@ -8,13 +8,10 @@ import (
 )
 
 func main() {
-	target, err := args.Load()
-	if err != nil {
+	if target, err := args.Load(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
-	}
-
-	if err := scan.ScanInit(target); err != nil {
+	} else if err := scan.ScanInit(target); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
