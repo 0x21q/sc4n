@@ -3,6 +3,7 @@ package args
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"goscan/types"
 	"net"
 	"strconv"
@@ -19,6 +20,11 @@ func Load() (types.ScanTarget, error) {
 		"p",
 		"",
 		"Specify port(s) to scan (e.g. -p <p1> or -p <p1, p2, ...> or -p <p1-p2>)",
+	)
+	raw_iface := flag.String(
+		"i",
+		"",
+		"Specify interface to use (e.g. -i <if>)",
 	)
 	tcp := flag.Bool("t", false, "Specify to perform TCP scan (default)")
 	syn := flag.Bool("s", false, "Specify to perform TCP syn scan")
@@ -39,25 +45,22 @@ func Load() (types.ScanTarget, error) {
 		return types.ScanTarget{}, err
 	}
 
-	if (*tcp && *syn) || (*tcp && *udp) || (*syn && *udp) {
-		return types.ScanTarget{},
-			errors.New("Mutiple scan modes are not yet supported")
+	iface, err := selectInterface(*raw_iface)
+	if err != nil {
+		return types.ScanTarget{}, err
 	}
+	fmt.Println("[+] Using interface: " + iface.Name)
 
-	var mode types.ScanMode
-	switch {
-	case *syn:
-		mode = types.SYN
-	case *udp:
-		mode = types.UDP
-	default:
-		mode = types.TCP
+	mode, err := checkScanFlags(tcp, syn, udp)
+	if err != nil {
+		return types.ScanTarget{}, err
 	}
 
 	return types.ScanTarget{
 			Hosts: hosts,
 			Ports: ports,
 			Mode:  mode,
+			Iface: iface,
 		},
 		nil
 }
@@ -123,4 +126,47 @@ func parseSingle(raw_ports string) ([]uint16, error) {
 	} else {
 		return []uint16{uint16(n)}, nil
 	}
+}
+
+func selectInterface(raw_interface string) (net.Interface, error) {
+	if raw_interface != "" {
+		iface, err := net.InterfaceByName(raw_interface)
+		if err != nil {
+			return net.Interface{}, err
+		}
+		return *iface, nil
+	}
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return net.Interface{}, err
+	}
+
+	// going through in reverse to select loopback as a last
+	// choice when checking for running interfaces
+	for i := len(interfaces) - 1; i >= 0; i-- {
+		if interfaces[i].Flags&net.FlagRunning == net.FlagRunning {
+			return interfaces[i], nil
+		}
+	}
+	return net.Interface{}, errors.New("No interface found")
+}
+
+func checkScanFlags(tcp *bool, syn *bool, udp *bool) (types.ScanMode, error) {
+	if (*tcp && *syn) || (*tcp && *udp) || (*syn && *udp) {
+		return types.SYN,
+			errors.New("Mutiple scan modes are not yet supported")
+	}
+
+	var mode types.ScanMode
+	switch {
+	case *syn:
+		mode = types.SYN
+	case *udp:
+		mode = types.UDP
+	default:
+		mode = types.TCP
+	}
+
+	return mode, nil
 }

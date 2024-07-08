@@ -25,6 +25,7 @@ type ScanTarget struct {
 	Hosts []net.IP
 	Ports []uint16
 	Mode  ScanMode
+	Iface net.Interface
 }
 
 type ScanResult struct {
