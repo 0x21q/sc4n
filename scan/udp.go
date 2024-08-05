@@ -2,6 +2,7 @@ package scan
 
 import (
 	"fmt"
+	"goscan/utils"
 	"net"
 	"strconv"
 	"time"
@@ -10,30 +11,53 @@ import (
 	"github.com/gopacket/gopacket/pcap"
 )
 
-func Udp(hosts []net.IP, ports []uint16) {
+func Udp(hosts []net.IP, ports []uint16, iface net.Interface) {
 	selected := SelectHost(hosts, true)
 	fmt.Printf("[+] Initiating udp scan on: %s\n", selected.String())
 
+	// since icmp is not deterministic and can be limited, the scanning
+	// consists of mutiple iterations, the ports without icmp response
+	// are scanned repeatedly until they are presumed as open or filtered
+
+	repeat_count := 3
+
+	scanAgain := scanPorts(selected, ports, iface)
+	for i := 0; i < repeat_count; i++ {
+		scanAgain = scanPorts(selected, scanAgain, iface)
+	}
+
 	for _, port := range ports {
-		if err := sendUdpPacket(selected, port); err != nil {
-			fmt.Println("The udp packet cannot be sent")
+		if utils.Contains(scanAgain, port) {
+			fmt.Printf("%5d/udp %13s\n", port, "open/filtered")
+		} else {
+			fmt.Printf("%5d/udp %13s\n", port, "closed")
+		}
+	}
+}
+
+func scanPorts(target net.IP, ports []uint16, iface net.Interface) []uint16 {
+	var scanAgain []uint16
+
+	for _, port := range ports {
+		if err := sendUdpPacket(target, port); err != nil {
+			fmt.Printf("The udp packet cannot be sent (port %d)", port)
 			continue
 		}
 
-		fmt.Println("[+] Sent udp packet to: ", selected.String(), " on port: ", port)
-
-		handle, err := pcapListen(selected)
+		handle, err := pcapListen(target, iface.Name)
 		if err != nil {
-			fmt.Println("The pcap listener cannot be initiated")
+			fmt.Printf("The pcap listener cannot be initiated (port %d)", port)
 			continue
 		}
 		defer handle.Close()
 
-		packetReceived := handlePacket(handle)
-		if !packetReceived {
-			fmt.Println("No packets received")
+		icmpReceived := handlePacket(handle)
+		if !icmpReceived {
+			scanAgain = append(scanAgain, port)
 		}
 	}
+
+	return scanAgain
 }
 
 func sendUdpPacket(target net.IP, port uint16) error {
@@ -57,10 +81,10 @@ func sendUdpPacket(target net.IP, port uint16) error {
 	return nil
 }
 
-func pcapListen(target net.IP) (*pcap.Handle, error) {
+func pcapListen(target net.IP, ifaceName string) (*pcap.Handle, error) {
 	bpfFilter := "icmp[icmptype] == icmp-unreach and src host " + target.String()
 
-	handle, err := pcap.OpenLive("eth0", 1600, false, time.Millisecond*300)
+	handle, err := pcap.OpenLive(ifaceName, 1600, false, time.Millisecond*10)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +99,7 @@ func pcapListen(target net.IP) (*pcap.Handle, error) {
 
 func handlePacket(handle *pcap.Handle) bool {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(3 * time.Second)
 	packetReceived := false
 
 	done := make(chan bool)
@@ -87,7 +111,6 @@ func handlePacket(handle *pcap.Handle) bool {
 				if packet == nil {
 					continue
 				}
-				fmt.Println(packet.String())
 				packetReceived = true
 				done <- true
 				return
