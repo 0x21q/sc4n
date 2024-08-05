@@ -8,14 +8,14 @@ import (
 	"os"
 )
 
-func ScanInit(target types.ScanTarget) error {
-	switch target.Mode {
+func ScanInit(scan types.ScanTarget) error {
+	switch scan.Mode {
 	case types.TCP:
-		Tcp(target.Hosts, target.Ports)
+		Tcp(scan.Hosts, scan.Ports, scan.Iface)
 	case types.SYN:
-		Syn(target.Hosts, target.Ports)
+		Syn(scan.Hosts, scan.Ports, scan.Iface)
 	case types.UDP:
-		Udp(target.Hosts, target.Ports)
+		Udp(scan.Hosts, scan.Ports, scan.Iface)
 	default:
 		return errors.New("Unknown scan mode")
 	}

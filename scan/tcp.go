@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func Tcp(hosts []net.IP, ports []uint16) {
+func Tcp(hosts []net.IP, ports []uint16, iface net.Interface) {
 	selected := SelectHost(hosts, true)
 	fmt.Printf("[+] Initiating TCP scan on: %s\n", selected.String())
 
