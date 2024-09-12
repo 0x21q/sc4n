@@ -6,6 +6,9 @@ import (
 	"goscan/types"
 	"net"
 	"os"
+	"time"
+
+	"github.com/gopacket/gopacket/pcap"
 )
 
 func ScanInit(scan types.ScanTarget) error {
@@ -41,4 +44,18 @@ func SelectHost(hosts []net.IP, verbose bool) net.IP {
 		os.Exit(1)
 	}
 	return hosts[0]
+}
+
+func pcapListen(ifaceName string, filter string) (*pcap.Handle, error) {
+	handle, err := pcap.OpenLive(ifaceName, 1600, false, time.Millisecond*10)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := handle.SetBPFFilter(filter); err != nil {
+		handle.Close()
+		return nil, err
+	}
+
+	return handle, nil
 }

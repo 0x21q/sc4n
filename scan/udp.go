@@ -2,8 +2,8 @@ package scan
 
 import (
 	"fmt"
-	"goscan/utils"
 	"net"
+	"slices"
 	"strconv"
 	"time"
 
@@ -27,7 +27,7 @@ func Udp(hosts []net.IP, ports []uint16, iface net.Interface) {
 	}
 
 	for _, port := range ports {
-		if utils.Contains(scanAgain, port) {
+		if slices.Contains(scanAgain, port) {
 			fmt.Printf("%5d/udp %13s\n", port, "open/filtered")
 		} else {
 			fmt.Printf("%5d/udp %13s\n", port, "closed")
@@ -38,21 +38,22 @@ func Udp(hosts []net.IP, ports []uint16, iface net.Interface) {
 func scanPorts(target net.IP, ports []uint16, iface net.Interface) []uint16 {
 	var scanAgain []uint16
 
+	bpfFilter := "icmp[icmptype] == icmp-unreach and src host " + target.String()
+
 	for _, port := range ports {
 		if err := sendUdpPacket(target, port); err != nil {
 			fmt.Printf("The udp packet cannot be sent (port %d)", port)
 			continue
 		}
 
-		handle, err := pcapListen(target, iface.Name)
+		handle, err := pcapListen(iface.Name, bpfFilter)
 		if err != nil {
 			fmt.Printf("The pcap listener cannot be initiated (port %d)", port)
 			continue
 		}
 		defer handle.Close()
 
-		icmpReceived := handlePacket(handle)
-		if !icmpReceived {
+		if !receivePacketUDP(handle, time.Second*3) {
 			scanAgain = append(scanAgain, port)
 		}
 	}
@@ -81,46 +82,27 @@ func sendUdpPacket(target net.IP, port uint16) error {
 	return nil
 }
 
-func pcapListen(target net.IP, ifaceName string) (*pcap.Handle, error) {
-	bpfFilter := "icmp[icmptype] == icmp-unreach and src host " + target.String()
+func receivePacketUDP(handle *pcap.Handle, timeout time.Duration) bool {
+	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	resChan := make(chan bool)
 
-	handle, err := pcap.OpenLive(ifaceName, 1600, false, time.Millisecond*10)
-	if err != nil {
-		return nil, err
-	}
+	go waitForPacketUDP(packetSource, resChan, timeout)
 
-	if err := handle.SetBPFFilter(bpfFilter); err != nil {
-		handle.Close()
-		return nil, err
-	}
-
-	return handle, nil
+	return <-resChan
 }
 
-func handlePacket(handle *pcap.Handle) bool {
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	timeout := time.After(3 * time.Second)
-	packetReceived := false
-
-	done := make(chan bool)
-
-	go func() {
-		for {
-			select {
-			case packet := <-packetSource.Packets():
-				if packet == nil {
-					continue
-				}
-				packetReceived = true
-				done <- true
-				return
-			case <-timeout:
-				done <- true
-				return
+func waitForPacketUDP(source *gopacket.PacketSource, res chan<- bool, timeout time.Duration) {
+	for {
+		select {
+		case packet := <-source.Packets():
+			if packet == nil {
+				continue
 			}
+			res <- true
+			return
+		case <-time.After(timeout):
+			res <- false
+			return
 		}
-	}()
-
-	<-done
-	return packetReceived
+	}
 }
