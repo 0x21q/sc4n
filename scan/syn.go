@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gopacket/gopacket"
@@ -19,59 +21,100 @@ import (
 func Syn(hosts []net.IP, ports []uint16, iface net.Interface) {
 	selected := SelectHost(hosts, true)
 
-	handleSend, err := pcap.OpenLive(iface.Name, 65535, false, time.Millisecond*10)
+	handleSend, err := pcap.OpenLive(iface.Name, 1600, false, time.Millisecond*10)
 	if err != nil {
 		fmt.Printf("failed to open device: %v\n", err)
 	}
 	defer handleSend.Close()
 
-	synackFilter := "(tcp[tcpflags] & (tcp-syn|tcp-ack) == (tcp-syn|tcp-ack))"
-	rstackFilter := "(tcp[tcpflags] & (tcp-rst|tcp-ack) == (tcp-rst|tcp-ack))"
-	bpfFilter := synackFilter + " or " + rstackFilter + " and src host " + selected.String()
+	srcPort, err := getLocalPort()
+	if err != nil {
+		fmt.Printf("failed to get local port: %v\n", err)
+	}
+
+	var wg sync.WaitGroup
 
 	for _, port := range ports {
-		if err := sendSynPacket(selected, port, iface, handleSend); err != nil {
-			fmt.Printf("failed to create SYN packet: %v\n", err)
-			continue
-		}
+		wg.Add(1)
+		go func(dstPort uint16) {
+			defer wg.Done()
 
-		handleListen, err := pcapListen(iface.Name, bpfFilter)
-		if err != nil {
-			fmt.Printf("failed to open device: %v\n", err)
-			continue
-		}
-		defer handleListen.Close()
+			filter := createFilterString(dstPort)
 
-		packetType := receivePacketTCP(handleListen, time.Second)
-		if packetType == "SYN-ACK" {
-			fmt.Printf("%d/tcp %6s\n", port, "open")
-		} else {
-			fmt.Printf("%d/tcp %6s\n", port, "closed")
-		}
+			handleListen, err := pcapListen(iface.Name, filter)
+			if err != nil {
+				fmt.Printf("failed to open device: %v\n", err)
+			}
+			defer handleListen.Close()
+
+			err = sendSynPacket(selected, srcPort, dstPort, iface, handleSend)
+			if err != nil {
+				fmt.Printf("failed to create SYN packet: %v\n", err)
+			}
+
+			packetType := receivePacketTCP(handleListen, time.Second)
+			if packetType == "SYN-ACK" {
+				fmt.Printf("%d/tcp %6s\n", dstPort, "open")
+			} else {
+				fmt.Printf("%d/tcp %6s\n", dstPort, "closed")
+			}
+		}(port)
 	}
+	wg.Wait()
 }
 
-func sendSynPacket(host net.IP, port uint16, iface net.Interface, sendHandle *pcap.Handle) error {
-	buf := gopacket.NewSerializeBuffer()
+func sendSynPacket(
+	host net.IP,
+	srcPort uint16,
+	dstPort uint16,
+	iface net.Interface,
+	sendHandle *pcap.Handle,
+) error {
+	buf, err := createSynPacket(host, iface, srcPort, dstPort)
+	if err != nil {
+		return fmt.Errorf("failed to create SYN packet: %v", err)
+	}
 
+	if err := sendHandle.WritePacketData((*buf).Bytes()); err != nil {
+		return fmt.Errorf("failed to write packet data: %v", err)
+	}
+
+	return nil
+}
+
+func createSynPacket(
+	dstIP net.IP,
+	iface net.Interface,
+	srcPort uint16,
+	dstPort uint16,
+) (*gopacket.SerializeBuffer, error) {
+	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
 		FixLengths:       true,
 		ComputeChecksums: true,
 	}
 
-	ethH := layers.Ethernet{
-		DstMAC:       getNextHopMAC(iface),
-		SrcMAC:       iface.HardwareAddr,
-		EthernetType: layers.EthernetTypeIPv4,
-	}
+	ethH := createEthHeader(iface)
 
 	srcIP, err := getInterfaceIP(iface)
 	if err != nil {
-		return fmt.Errorf("failed to get interface IP: %v", err)
+		return nil, fmt.Errorf("failed to get interface IP: %v", err)
+	}
+	ipH := createIpHeader(srcIP, dstIP)
+
+	tcpH := createTcpHeader(srcPort, dstPort)
+	tcpH.SetNetworkLayerForChecksum(ipH)
+
+	if err := gopacket.SerializeLayers(buf, opts, ethH, ipH, tcpH); err != nil {
+		return nil, fmt.Errorf("failed to serialize layers: %v", err)
 	}
 
-	ipH := layers.IPv4{
-		DstIP:    host,
+	return &buf, nil
+}
+
+func createIpHeader(srcIP, dstIP net.IP) *layers.IPv4 {
+	return &layers.IPv4{
+		DstIP:    dstIP,
 		SrcIP:    srcIP,
 		Protocol: layers.IPProtocolTCP,
 		Version:  4,
@@ -79,10 +122,12 @@ func sendSynPacket(host net.IP, port uint16, iface net.Interface, sendHandle *pc
 		IHL:      5,
 		Id:       33333,
 	}
+}
 
-	tcpH := layers.TCP{
-		DstPort: layers.TCPPort(port),
-		SrcPort: layers.TCPPort(59595),
+func createTcpHeader(srcPort, dstPort uint16) *layers.TCP {
+	return &layers.TCP{
+		DstPort: layers.TCPPort(dstPort),
+		SrcPort: layers.TCPPort(srcPort),
 		SYN:     true,
 		Seq:     123456789,
 		Window:  1024,
@@ -94,18 +139,14 @@ func sendSynPacket(host net.IP, port uint16, iface net.Interface, sendHandle *pc
 			},
 		},
 	}
+}
 
-	tcpH.SetNetworkLayerForChecksum(&ipH)
-
-	if err := gopacket.SerializeLayers(buf, opts, &ethH, &ipH, &tcpH); err != nil {
-		return fmt.Errorf("failed to serialize layers: %v", err)
+func createEthHeader(iface net.Interface) *layers.Ethernet {
+	return &layers.Ethernet{
+		DstMAC:       getNextHopMAC(iface),
+		SrcMAC:       iface.HardwareAddr,
+		EthernetType: layers.EthernetTypeIPv4,
 	}
-
-	if err := sendHandle.WritePacketData(buf.Bytes()); err != nil {
-		return fmt.Errorf("failed to write packet data: %v", err)
-	}
-
-	return nil
 }
 
 func getInterfaceIP(iface net.Interface) (net.IP, error) {
@@ -127,22 +168,17 @@ func getInterfaceIP(iface net.Interface) (net.IP, error) {
 
 func receivePacketTCP(handle *pcap.Handle, timeout time.Duration) string {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	res := make(chan bool)
-	packetType := ""
 
-	go waitForPacketTCP(packetSource, res, timeout, &packetType)
-
-	<-res
-	return packetType
-
+	return waitForPacketTCP(packetSource, timeout)
 }
 
 func waitForPacketTCP(
 	source *gopacket.PacketSource,
-	res chan<- bool,
 	timeout time.Duration,
-	packetType *string,
-) {
+) string {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	for {
 		select {
 		case packet := <-(*source).Packets():
@@ -157,22 +193,45 @@ func waitForPacketTCP(
 			tcp, _ := tcpLayer.(*layers.TCP)
 
 			if tcp.SYN && tcp.ACK {
-				*packetType = "SYN-ACK"
-				res <- true
-				return
+				return "SYN-ACK"
 			}
 
 			if tcp.RST && tcp.ACK {
-				*packetType = "RST-ACK"
-				res <- true
-				return
+				return "RST-ACK"
 			}
-		case <-time.After(timeout):
-			*packetType = ""
-			res <- true
-			return
+		case <-timer.C:
+			return "timeout"
 		}
 	}
+}
+
+func getLocalPort() (uint16, error) {
+	conn, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		return 0, fmt.Errorf("failed to listen: %v", err)
+	}
+	defer conn.Close()
+
+	addr := conn.Addr().String()
+	port, err := strconv.Atoi(strings.Split(addr, ":")[1])
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse port: %v", err)
+	}
+
+	return uint16(port), nil
+}
+
+func createFilterString(dstPort uint16) string {
+	synack := "(tcp[tcpflags] & (tcp-syn|tcp-ack) == (tcp-syn|tcp-ack))"
+	rstack := "(tcp[tcpflags] & (tcp-rst|tcp-ack) == (tcp-rst|tcp-ack))"
+	filter := fmt.Sprintf(
+		"tcp and src port %d and (%s or %s)",
+		dstPort,
+		synack,
+		rstack,
+	)
+
+	return filter
 }
 
 func getNextHopMAC(iface net.Interface) net.HardwareAddr {
@@ -183,7 +242,7 @@ func getNextHopMAC(iface net.Interface) net.HardwareAddr {
 
 	mac, err := sendARP(gw, iface)
 	if err != nil {
-		fmt.Printf("failed to send ARP request to next hop device: %v\n", err)
+		fmt.Printf("failed to send ARP request to next hop: %v\n", err)
 		return net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 	}
 
