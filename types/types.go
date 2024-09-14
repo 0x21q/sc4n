@@ -17,6 +17,7 @@ type ScanState uint8
 const (
 	UNKNOWN ScanState = iota
 	OPEN
+	OPEN_FILTERED
 	FILTERED
 	CLOSED
 )
