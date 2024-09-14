@@ -2,6 +2,7 @@ package scan
 
 import (
 	"fmt"
+	"goscan/types"
 	"net"
 	"net/netip"
 	"strconv"
@@ -32,35 +33,42 @@ func Syn(hosts []net.IP, ports []uint16, iface net.Interface) {
 		fmt.Printf("failed to get local port: %v\n", err)
 	}
 
+	resChan := make(chan types.ScanResult, len(ports))
 	var wg sync.WaitGroup
 
 	for _, port := range ports {
 		wg.Add(1)
 		go func(dstPort uint16) {
 			defer wg.Done()
-
-			filter := createFilterString(dstPort)
+			sRes := types.ScanResult{Host: selected, Port: dstPort, State: types.UNKNOWN}
+			filter := createFilterString(selected, dstPort, types.SYN)
 
 			handleListen, err := pcapListen(iface.Name, filter)
 			if err != nil {
 				fmt.Printf("failed to open device: %v\n", err)
+				resChan <- sRes
+				return
 			}
 			defer handleListen.Close()
 
 			err = sendSynPacket(selected, srcPort, dstPort, iface, handleSend)
 			if err != nil {
 				fmt.Printf("failed to create SYN packet: %v\n", err)
+				resChan <- sRes
+				return
 			}
 
-			packetType := receivePacketTCP(handleListen, time.Second)
-			if packetType == "SYN-ACK" {
-				fmt.Printf("%d/tcp %6s\n", dstPort, "open")
-			} else {
-				fmt.Printf("%d/tcp %6s\n", dstPort, "closed")
-			}
+			sRes.State = receivePacketTCP(handleListen, time.Second)
+			resChan <- sRes
 		}(port)
 	}
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(resChan)
+	}()
+
+	results := parseResChan(resChan)
+	printResults(results)
 }
 
 func sendSynPacket(
@@ -166,16 +174,16 @@ func getInterfaceIP(iface net.Interface) (net.IP, error) {
 	return net.ParseIP(strings.Split(addrs[0].String(), "/")[0]), nil
 }
 
-func receivePacketTCP(handle *pcap.Handle, timeout time.Duration) string {
+func receivePacketTCP(handle *pcap.Handle, t time.Duration) types.ScanState {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 
-	return waitForPacketTCP(packetSource, timeout)
+	return waitForPacketTCP(packetSource, t)
 }
 
 func waitForPacketTCP(
 	source *gopacket.PacketSource,
 	timeout time.Duration,
-) string {
+) types.ScanState {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
@@ -193,14 +201,14 @@ func waitForPacketTCP(
 			tcp, _ := tcpLayer.(*layers.TCP)
 
 			if tcp.SYN && tcp.ACK {
-				return "SYN-ACK"
+				return types.OPEN
 			}
 
 			if tcp.RST && tcp.ACK {
-				return "RST-ACK"
+				return types.CLOSED
 			}
 		case <-timer.C:
-			return "timeout"
+			return types.FILTERED
 		}
 	}
 }
@@ -219,19 +227,6 @@ func getLocalPort() (uint16, error) {
 	}
 
 	return uint16(port), nil
-}
-
-func createFilterString(dstPort uint16) string {
-	synack := "(tcp[tcpflags] & (tcp-syn|tcp-ack) == (tcp-syn|tcp-ack))"
-	rstack := "(tcp[tcpflags] & (tcp-rst|tcp-ack) == (tcp-rst|tcp-ack))"
-	filter := fmt.Sprintf(
-		"tcp and src port %d and (%s or %s)",
-		dstPort,
-		synack,
-		rstack,
-	)
-
-	return filter
 }
 
 func getNextHopMAC(iface net.Interface) net.HardwareAddr {
